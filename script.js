@@ -506,7 +506,99 @@ function isLineType(r, c, player, n, dr, dc, currentBoard, isLiveCheck) {
 
 
 
-// --- AI Logic ---
+// --- Enhanced AI Logic with Forbidden Move Avoidance and 4-3 Strategy ---
+
+// Pattern recognition for advanced strategies
+function analyzePattern(row, col, player, tempBoard) {
+    const directions = [
+        { dr: 0, dc: 1 },  // Horizontal
+        { dr: 1, dc: 0 },  // Vertical
+        { dr: 1, dc: 1 },  // Diagonal \
+        { dr: 1, dc: -1 }  // Diagonal /
+    ];
+    
+    let patterns = {
+        liveFours: 0,
+        chongFours: 0,
+        liveThrees: 0,
+        deadThrees: 0,
+        liveTwos: 0
+    };
+    
+    for (const { dr, dc } of directions) {
+        const pattern = getLinePattern(row, col, dr, dc, player, tempBoard);
+        patterns.liveFours += pattern.liveFours;
+        patterns.chongFours += pattern.chongFours;
+        patterns.liveThrees += pattern.liveThrees;
+        patterns.deadThrees += pattern.deadThrees;
+        patterns.liveTwos += pattern.liveTwos;
+    }
+    
+    return patterns;
+}
+
+function getLinePattern(row, col, dr, dc, player, tempBoard) {
+    const opponent = player === 1 ? 2 : 1;
+    let line = [];
+    
+    // Get 9-cell line centered on the move
+    for (let i = -4; i <= 4; i++) {
+        const r = row + dr * i;
+        const c = col + dc * i;
+        if (r >= 0 && r < BOARD_SIZE && c >= 0 && c < BOARD_SIZE) {
+            line.push(tempBoard[r][c]);
+        } else {
+            line.push(-1); // Out of bounds
+        }
+    }
+    
+    let patterns = {
+        liveFours: 0,
+        chongFours: 0,
+        liveThrees: 0,
+        deadThrees: 0,
+        liveTwos: 0
+    };
+    
+    // Check for various patterns
+    const lineStr = line.join(',');
+    const p = player;
+    const o = opponent;
+    
+    // Live Four patterns: _XXXX_
+    if (lineStr.includes(`0,${p},${p},${p},${p},0`)) patterns.liveFours++;
+    
+    // Chong Four patterns: OXXXX_, _XXXXO, X_XXX, XX_XX, XXX_X
+    if (lineStr.includes(`${o},${p},${p},${p},${p},0`) || 
+        lineStr.includes(`0,${p},${p},${p},${p},${o}`) ||
+        lineStr.includes(`${p},0,${p},${p},${p}`) ||
+        lineStr.includes(`${p},${p},0,${p},${p}`) ||
+        lineStr.includes(`${p},${p},${p},0,${p}`)) {
+        patterns.chongFours++;
+    }
+    
+    // Live Three patterns: _XXX_, _X_XX_, _XX_X_
+    if (lineStr.includes(`0,${p},${p},${p},0`) ||
+        lineStr.includes(`0,${p},0,${p},${p},0`) ||
+        lineStr.includes(`0,${p},${p},0,${p},0`)) {
+        patterns.liveThrees++;
+    }
+    
+    // Dead Three patterns (blocked on one side)
+    if (lineStr.includes(`${o},${p},${p},${p},0`) ||
+        lineStr.includes(`0,${p},${p},${p},${o}`)) {
+        patterns.deadThrees++;
+    }
+    
+    // Live Two patterns: _XX_, _X_X_
+    if (lineStr.includes(`0,${p},${p},0`) ||
+        lineStr.includes(`0,${p},0,${p},0`)) {
+        patterns.liveTwos++;
+    }
+    
+    return patterns;
+}
+
 function evaluateWindow(window, player) {
     let score = 0;
     const opponent = player === 1 ? 2 : 1;
@@ -532,9 +624,10 @@ function evaluateWindow(window, player) {
     } else if (playerCount === 1 && emptyCount === 4) {
         score += 50;      // AI has one stone in an open window
     }
+    
     // Score for the opponent (to block)
     if (opponentCount === 5) {
-        score -= 800000; // Opponent wins (should have been blocked earlier by win/block check)
+        score -= 800000; // Opponent wins
     } else if (opponentCount === 4 && emptyCount === 1) {
         score -= 100000;  // Opponent has a live four (urgent to block)
     } else if (opponentCount === 3 && emptyCount === 2) {
@@ -543,14 +636,12 @@ function evaluateWindow(window, player) {
         score -= 1000;    // Opponent has a live two
     }
     
-    // Bonus for AI's non-live but threatening fours (e.g., XXXX_ or _XXXX or XX_XX)
-    // This requires more specific pattern matching within the window if desired.
-    // For example, if playerCount is 4 and opponentCount is 1 (blocked four), still give some points.
+    // Bonus for AI's non-live but threatening fours
     if (playerCount === 4 && opponentCount === 1) {
         score += 1000; // AI's blocked four, still good for pressure
     }
     if (opponentCount === 4 && playerCount === 1) {
-        score -= 2000; // Opponent's blocked four, less urgent than live four but still a threat
+        score -= 2000; // Opponent's blocked four
     }
 
     return score;
@@ -559,21 +650,18 @@ function evaluateWindow(window, player) {
 function scorePosition(tempBoard, player) {
     let score = 0;
     const center = Math.floor(BOARD_SIZE / 2);
-    // Slightly prefer placing pieces closer to the center, especially early game.
-    // This is a very simple heuristic for spatial control.
+    
+    // Center preference
     for(let r=0; r<BOARD_SIZE; r++) {
         for(let c=0; c<BOARD_SIZE; c++) {
             if(tempBoard[r][c] === player) {
-                // Score decreases as distance from center increases
                 score += (7 - (Math.abs(r - center) + Math.abs(c - center))/2 );
             }
-             // Penalize opponent pieces far from center less, or even slightly reward if they are scattered
-            else if (tempBoard[r][c] !== 0) { // Opponent piece
+            else if (tempBoard[r][c] !== 0) {
                  score -= (3 - (Math.abs(r - center) + Math.abs(c - center))/4 );
             }
         }
     }
-    // score += tempBoard[center][center] === player ? 20 : 0; // Stronger center preference
 
     // Horizontal scores
     for (let r = 0; r < BOARD_SIZE; r++) {
@@ -609,53 +697,423 @@ function scorePosition(tempBoard, player) {
     return score;
 }
 
+function scorePositionAdvanced(tempBoard, player, moveRow, moveCol) {
+    let score = scorePosition(tempBoard, player);
+    
+    // Advanced pattern analysis for the specific move
+    const patterns = analyzePattern(moveRow, moveCol, player, tempBoard);
+    
+    // Bonus for creating strong patterns
+    score += patterns.liveFours * 100000;
+    score += patterns.chongFours * 10000;
+    score += patterns.liveThrees * 5000;
+    score += patterns.deadThrees * 1000;
+    score += patterns.liveTwos * 200;
+    
+    // Bonus for 4-3 combinations
+    if (patterns.chongFours >= 1 && patterns.liveThrees >= 1) {
+        score += 50000; // Strong 4-3 combination
+    }
+    
+    if (patterns.chongFours >= 2) {
+        score += 30000; // Double chong four
+    }
+    
+    // Penalty for risky positions that might lead to forbidden moves
+    const riskScore = evaluateForbiddenRisk(moveRow, moveCol, player, tempBoard);
+    score -= riskScore;
+    
+    return score;
+}
+
+function evaluateForbiddenRisk(row, col, player, tempBoard) {
+    let risk = 0;
+    const directions = [
+        { dr: 0, dc: 1 },  // Horizontal
+        { dr: 1, dc: 0 },  // Vertical
+        { dr: 1, dc: 1 },  // Diagonal \
+        { dr: 1, dc: -1 }  // Diagonal /
+    ];
+    
+    // Check if this move creates potential for future forbidden moves
+    let potentialThrees = 0;
+    let potentialFours = 0;
+    
+    for (const { dr, dc } of directions) {
+        // Check if this direction could become a live three
+        let count = 1;
+        let openEnds = 0;
+        
+        // Check positive direction
+        for (let i = 1; i <= 4; i++) {
+            const r = row + dr * i;
+            const c = col + dc * i;
+            if (r >= 0 && r < BOARD_SIZE && c >= 0 && c < BOARD_SIZE) {
+                if (tempBoard[r][c] === player) count++;
+                else if (tempBoard[r][c] === 0) { openEnds++; break; }
+                else break;
+            } else break;
+        }
+        
+        // Check negative direction
+        for (let i = 1; i <= 4; i++) {
+            const r = row - dr * i;
+            const c = col - dc * i;
+            if (r >= 0 && r < BOARD_SIZE && c >= 0 && c < BOARD_SIZE) {
+                if (tempBoard[r][c] === player) count++;
+                else if (tempBoard[r][c] === 0) { openEnds++; break; }
+                else break;
+            } else break;
+        }
+        
+        if (count === 3 && openEnds >= 2) potentialThrees++;
+        if (count === 4 && openEnds >= 1) potentialFours++;
+    }
+    
+    // High risk if multiple potential threes (could lead to double-three)
+    if (potentialThrees >= 2) risk += 5000;
+    if (potentialFours >= 2) risk += 10000;
+    
+    return risk;
+}
+
+// 检查某个位置是否会形成活三
+function isLiveThree(row, col, player, tempBoard) {
+    const directions = [
+        { dr: 0, dc: 1 },  // Horizontal
+        { dr: 1, dc: 0 },  // Vertical
+        { dr: 1, dc: 1 },  // Diagonal \ 
+        { dr: 1, dc: -1 }  // Diagonal / 
+    ];
+    
+    for (const { dr, dc } of directions) {
+        let count = 1;
+        let leftOpen = false, rightOpen = false;
+        
+        // 检查左侧
+        let leftCount = 0;
+        for (let i = 1; i <= 4; i++) {
+            const r = row - dr * i;
+            const c = col - dc * i;
+            if (r >= 0 && r < BOARD_SIZE && c >= 0 && c < BOARD_SIZE) {
+                if (tempBoard[r][c] === player) {
+                    leftCount++;
+                } else if (tempBoard[r][c] === 0 && i === leftCount + 1) {
+                    leftOpen = true;
+                    break;
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        
+        // 检查右侧
+        let rightCount = 0;
+        for (let i = 1; i <= 4; i++) {
+            const r = row + dr * i;
+            const c = col + dc * i;
+            if (r >= 0 && r < BOARD_SIZE && c >= 0 && c < BOARD_SIZE) {
+                if (tempBoard[r][c] === player) {
+                    rightCount++;
+                } else if (tempBoard[r][c] === 0 && i === rightCount + 1) {
+                    rightOpen = true;
+                    break;
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        
+        count += leftCount + rightCount;
+        
+        // 活三：正好3个子且两端都开放
+        if (count === 3 && leftOpen && rightOpen) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// 检查某个位置是否会形成活四或冲四
+function isFourPattern(row, col, player, tempBoard) {
+    const directions = [
+        { dr: 0, dc: 1 },  // Horizontal
+        { dr: 1, dc: 0 },  // Vertical
+        { dr: 1, dc: 1 },  // Diagonal \ 
+        { dr: 1, dc: -1 }  // Diagonal / 
+    ];
+    
+    for (const { dr, dc } of directions) {
+        let count = 1;
+        let openEnds = 0;
+        
+        // 检查左侧
+        let leftCount = 0;
+        for (let i = 1; i <= 4; i++) {
+            const r = row - dr * i;
+            const c = col - dc * i;
+            if (r >= 0 && r < BOARD_SIZE && c >= 0 && c < BOARD_SIZE) {
+                if (tempBoard[r][c] === player) {
+                    leftCount++;
+                } else if (tempBoard[r][c] === 0 && i === leftCount + 1) {
+                    openEnds++;
+                    break;
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        
+        // 检查右侧
+        let rightCount = 0;
+        for (let i = 1; i <= 4; i++) {
+            const r = row + dr * i;
+            const c = col + dc * i;
+            if (r >= 0 && r < BOARD_SIZE && c >= 0 && c < BOARD_SIZE) {
+                if (tempBoard[r][c] === player) {
+                    rightCount++;
+                } else if (tempBoard[r][c] === 0 && i === rightCount + 1) {
+                    openEnds++;
+                    break;
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        
+        count += leftCount + rightCount;
+        
+        // 四的模式：活四（两端开放）或冲四（至少一端开放）
+        if (count === 4 && openEnds >= 1) {
+            return { isFour: true, isLiveFour: openEnds === 2 };
+        }
+    }
+    return { isFour: false, isLiveFour: false };
+}
+
+// 寻找四三胜的机会
+function findFourThreeWin(player, tempBoard) {
+    const moves = [];
+    
+    for (let r = 0; r < BOARD_SIZE; r++) {
+        for (let c = 0; c < BOARD_SIZE; c++) {
+            if (tempBoard[r][c] === 0) {
+                tempBoard[r][c] = player;
+                
+                // 检查是否会触发禁手
+                const forbidden = checkForbiddenMove(r, c, player);
+                if (!forbidden.isForbidden) {
+                    const fourPattern = isFourPattern(r, c, player, tempBoard);
+                    const liveThree = isLiveThree(r, c, player, tempBoard);
+                    
+                    // 寻找同时形成四和三的位置（四三胜）
+                    if (fourPattern.isFour && liveThree) {
+                        tempBoard[r][c] = 0;
+                        return { row: r, col: c, priority: 1000 }; // 最高优先级
+                    }
+                    
+                    // 寻找能形成活四的位置
+                    if (fourPattern.isLiveFour) {
+                        moves.push({ row: r, col: c, priority: 800 });
+                    }
+                    // 寻找能形成冲四的位置
+                    else if (fourPattern.isFour) {
+                        moves.push({ row: r, col: c, priority: 600 });
+                    }
+                    // 寻找能形成活三的位置
+                    else if (liveThree) {
+                        moves.push({ row: r, col: c, priority: 400 });
+                    }
+                }
+                
+                tempBoard[r][c] = 0;
+            }
+        }
+    }
+    
+    // 返回优先级最高的移动
+    if (moves.length > 0) {
+        moves.sort((a, b) => b.priority - a.priority);
+        return moves[0];
+    }
+    
+    return null;
+}
+
 function findBestMoveForAI() {
+    const aiPlayer = 2;
+    const humanPlayer = 1;
+    let moveCount = 0;
+    
+    // Count total moves to determine game phase
+    for (let r = 0; r < BOARD_SIZE; r++) {
+        for (let c = 0; c < BOARD_SIZE; c++) {
+            if (board[r][c] !== 0) moveCount++;
+        }
+    }
+    
+    // Opening strategy - safe positions
+    if (moveCount <= 2) {
+        return getSafeOpeningMove();
+    }
+    
+    // 1. Check if AI can win (but avoid forbidden moves)
+    const winMove = findWinningMove(aiPlayer);
+    if (winMove && !checkForbiddenMove(winMove.row, winMove.col, aiPlayer).isForbidden) {
+        return winMove;
+    }
+    
+    // 2. Block opponent's winning moves
+    const blockMove = findWinningMove(humanPlayer);
+    if (blockMove && !checkForbiddenMove(blockMove.row, blockMove.col, aiPlayer).isForbidden) {
+        return blockMove;
+    }
+    
+    // 3. Try to create 4-3 winning combinations
+    const fourThreeMove = findFourThreeMove();
+    if (fourThreeMove) {
+        return fourThreeMove;
+    }
+    
+    // 4. Create safe threats (chong fours)
+    const chongFourMove = findSafeChongFourMove();
+    if (chongFourMove) {
+        return chongFourMove;
+    }
+    
+    // 5. Use enhanced evaluation with forbidden move avoidance
+    return findBestSafeMove();
+}
+
+function getSafeOpeningMove() {
+    const center = Math.floor(BOARD_SIZE / 2);
+    
+    // First move: center
+    if (board[center][center] === 0) {
+        return { row: center, col: center };
+    }
+    
+    // Safe opening patterns (Huayue, Puyue style)
+    const safeOpenings = [
+        { row: center - 1, col: center - 1 },
+        { row: center + 1, col: center + 1 },
+        { row: center - 1, col: center + 1 },
+        { row: center + 1, col: center - 1 },
+        { row: center, col: center - 1 },
+        { row: center, col: center + 1 },
+        { row: center - 1, col: center },
+        { row: center + 1, col: center }
+    ];
+    
+    for (const move of safeOpenings) {
+        if (move.row >= 0 && move.row < BOARD_SIZE && 
+            move.col >= 0 && move.col < BOARD_SIZE && 
+            board[move.row][move.col] === 0 &&
+            !checkForbiddenMove(move.row, move.col, 2).isForbidden) {
+            return move;
+        }
+    }
+    
+    return { row: center, col: center - 2 }; // Fallback
+}
+
+function findWinningMove(player) {
+    for (let r = 0; r < BOARD_SIZE; r++) {
+        for (let c = 0; c < BOARD_SIZE; c++) {
+            if (board[r][c] === 0) {
+                board[r][c] = player;
+                if (checkWin(r, c, player, board)) {
+                    board[r][c] = 0;
+                    return { row: r, col: c };
+                }
+                board[r][c] = 0;
+            }
+        }
+    }
+    return null;
+}
+
+function findFourThreeMove() {
+    const aiPlayer = 2;
+    
+    for (let r = 0; r < BOARD_SIZE; r++) {
+        for (let c = 0; c < BOARD_SIZE; c++) {
+            if (board[r][c] === 0) {
+                // Check if this move is forbidden
+                if (checkForbiddenMove(r, c, aiPlayer).isForbidden) {
+                    continue;
+                }
+                
+                board[r][c] = aiPlayer;
+                const patterns = analyzePattern(r, c, aiPlayer, board);
+                board[r][c] = 0;
+                
+                // 4-3 combination: one chong four + one live three
+                // or live four + live three (but live four usually wins immediately)
+                if ((patterns.chongFours >= 1 && patterns.liveThrees >= 1) ||
+                    (patterns.liveFours >= 1 && patterns.liveThrees >= 1)) {
+                    return { row: r, col: c };
+                }
+                
+                // Double chong four is also very strong
+                if (patterns.chongFours >= 2) {
+                    return { row: r, col: c };
+                }
+            }
+        }
+    }
+    return null;
+}
+
+function findSafeChongFourMove() {
+    const aiPlayer = 2;
+    
+    for (let r = 0; r < BOARD_SIZE; r++) {
+        for (let c = 0; c < BOARD_SIZE; c++) {
+            if (board[r][c] === 0) {
+                if (checkForbiddenMove(r, c, aiPlayer).isForbidden) {
+                    continue;
+                }
+                
+                board[r][c] = aiPlayer;
+                const patterns = analyzePattern(r, c, aiPlayer, board);
+                board[r][c] = 0;
+                
+                // Create chong four (safe threat)
+                if (patterns.chongFours >= 1) {
+                    return { row: r, col: c };
+                }
+            }
+        }
+    }
+    return null;
+}
+
+function findBestSafeMove() {
     let bestScore = -Infinity;
     let move = null;
     const aiPlayer = 2;
-    const humanPlayer = 1;
-
-    // 1. Check if AI can win
+    
     for (let r = 0; r < BOARD_SIZE; r++) {
         for (let c = 0; c < BOARD_SIZE; c++) {
             if (board[r][c] === 0) {
+                // Skip forbidden moves
+                if (checkForbiddenMove(r, c, aiPlayer).isForbidden) {
+                    continue;
+                }
+                
                 board[r][c] = aiPlayer;
-                if (checkWin(r, c, aiPlayer, board)) {
-                    board[r][c] = 0; // Revert
-                    return { row: r, col: c };
-                }
-                board[r][c] = 0; // Revert
-            }
-        }
-    }
-
-    // 2. Check if player is about to win and block
-    for (let r = 0; r < BOARD_SIZE; r++) {
-        for (let c = 0; c < BOARD_SIZE; c++) {
-            if (board[r][c] === 0) {
-                board[r][c] = humanPlayer;
-                // Check if placing player piece here would be a forbidden move for player
-                // If so, AI should not consider this a threat that *must* be blocked by placing AI piece there,
-                // unless blocking it also creates a very good position for AI.
-                // However, for simplicity now, we assume player won't make a forbidden move if it's not a win.
-                // Or, more accurately, if player *would* win, AI must block.
-                if (checkWin(r, c, humanPlayer, board)) {
-                    board[r][c] = 0; // Revert
-                    return { row: r, col: c }; // Block here
-                }
-                board[r][c] = 0; // Revert
-            }
-        }
-    }
-
-    // 3. Use evaluation function to find the best move
-    for (let r = 0; r < BOARD_SIZE; r++) {
-        for (let c = 0; c < BOARD_SIZE; c++) {
-            if (board[r][c] === 0) {
-                board[r][c] = aiPlayer; // Try AI move
-                let currentScore = scorePosition(board, aiPlayer);
-                board[r][c] = 0; // Revert
-
+                let currentScore = scorePositionAdvanced(board, aiPlayer, r, c);
+                board[r][c] = 0;
+                
                 if (currentScore > bestScore) {
                     bestScore = currentScore;
                     move = { row: r, col: c };
@@ -664,21 +1122,22 @@ function findBestMoveForAI() {
         }
     }
     
-    // If no good move found by scoring (e.g. all scores are 0 or negative), pick a random one
+    // If no safe move found, pick a random safe one
     if (!move) {
-        const emptyCells = [];
+        const safeCells = [];
         for (let r = 0; r < BOARD_SIZE; r++) {
             for (let c = 0; c < BOARD_SIZE; c++) {
-                if (board[r][c] === 0) {
-                    emptyCells.push({ row: r, col: c });
+                if (board[r][c] === 0 && !checkForbiddenMove(r, c, aiPlayer).isForbidden) {
+                    safeCells.push({ row: r, col: c });
                 }
             }
         }
-        if (emptyCells.length > 0) {
-            const randomIndex = Math.floor(Math.random() * emptyCells.length);
-            move = emptyCells[randomIndex];
+        if (safeCells.length > 0) {
+            const randomIndex = Math.floor(Math.random() * safeCells.length);
+            move = safeCells[randomIndex];
         }
     }
+    
     return move;
 }
 

@@ -12,17 +12,19 @@ canvas.width = (BOARD_SIZE - 1) * CELL_SIZE + 2 * PADDING;
 canvas.height = (BOARD_SIZE - 1) * CELL_SIZE + 2 * PADDING;
 
 let board = []; // 0: empty, 1: black (player), 2: white (AI)
-let currentPlayer = 1; // 1 for black, 2 for white
+let currentPlayer = 2; // 2 for white (AI first), 1 for black (player)
 let gameOver = false;
 
 // --- Initialization ---
 function initGame() {
     board = Array(BOARD_SIZE).fill(null).map(() => Array(BOARD_SIZE).fill(0));
-    currentPlayer = 1;
+    currentPlayer = 2; // White (AI) goes first
     gameOver = false;
     drawBoard();
-    updateGameInfo('Black (You) to move');
+    updateGameInfo('Computer (White) thinking...');
     gameStatusP.textContent = '';
+    // AI makes the first move
+    setTimeout(computerMove, 500);
 }
 
 // --- Drawing Functions ---
@@ -120,15 +122,12 @@ function makeMove(row, col, player) {
     board[row][col] = player;
     drawPiece(row, col, player);
 
-    if (player === 1) { // Check forbidden moves for Black (player)
-        const forbidden = checkForbiddenMove(row, col);
+    if (player === 2) { // Check forbidden moves for White (AI) - now White has restrictions
+        const forbidden = checkForbiddenMove(row, col, player);
         if (forbidden.isForbidden) {
             gameOver = true;
-            gameStatusP.textContent = `Black (${forbidden.type}) Forbidden Move! Computer (White) Wins!`;
-            updateGameInfo('Computer (White) Wins!');
-            // Optionally, remove the piece that caused the forbidden move for clarity, or leave it
-            // board[row][col] = 0; 
-            // drawBoard(); // Redraw if piece is removed
+            gameStatusP.textContent = `White (${forbidden.type}) Forbidden Move! Black (You) Wins!`;
+            updateGameInfo('Black (You) Wins!');
             return; // End move processing
         }
     }
@@ -351,8 +350,8 @@ function isOpenThreat(row, col, dr, dc, player, type, tempBoard) {
     return false;
 }
 
-function checkForbiddenMove(row, col) {
-    const player = 1; // Forbidden moves are for Black
+function checkForbiddenMove(row, col, player = 2) {
+    // Now forbidden moves are for White (AI), player parameter allows flexibility
     let tempBoard = board.map(arr => arr.slice());
     tempBoard[row][col] = player; // Assume the move is made
 

@@ -222,14 +222,25 @@ function evaluateDiagonalThreat(row, col, player) {
     return diagonalThreatScore;
 }
 
-// 评估禁手陷阱
+// 禁手诱导防御 - 强化版
 function evaluateForbiddenTrap(row, col, opponentPlayer) {
     let trapScore = 0;
     const aiPlayer = 2;
     
-    // 检查周围的空位
-    for (let dr = -1; dr <= 1; dr++) {
-        for (let dc = -1; dc <= 1; dc++) {
+    // 检查是否能设置禁手陷阱
+    const trapResult = setForbiddenTrap(row, col, opponentPlayer);
+    if (trapResult.canTrap) {
+        trapScore += 20000; // 成功设置禁手陷阱的高分奖励
+        
+        // 如果能迫使对手走入禁手点，额外加分
+        if (trapResult.isForced) {
+            trapScore += 15000;
+        }
+    }
+    
+    // 检查周围的空位是否会成为禁手点
+    for (let dr = -2; dr <= 2; dr++) {
+        for (let dc = -2; dc <= 2; dc++) {
             if (dr === 0 && dc === 0) continue;
             
             const r = row + dr;
@@ -240,16 +251,22 @@ function evaluateForbiddenTrap(row, col, opponentPlayer) {
                 board[row][col] = aiPlayer;
                 
                 // 检查这个位置对黑棋是否是禁手点
-                const isForbidden = checkForbiddenMove(r, c, opponentPlayer).isForbidden;
+                const forbidden = checkForbiddenMove(r, c, opponentPlayer);
                 
-                // 如果是禁手点，增加分数
-                if (isForbidden) {
-                    trapScore += 5;
+                if (forbidden.isForbidden) {
+                    // 根据禁手类型给予不同分数
+                    if (forbidden.type === 'Double Three') {
+                        trapScore += 8000; // 双三禁手陷阱
+                    } else if (forbidden.type === 'Double Four') {
+                        trapScore += 12000; // 双四禁手陷阱
+                    } else if (forbidden.type === 'Long Connection') {
+                        trapScore += 5000; // 长连禁手陷阱
+                    }
                     
-                    // 进一步检查这个禁手点是否会被迫走（例如，AI形成活三或冲四）
+                    // 检查是否能通过威胁迫使对手走入禁手点
                     const patterns = analyzePattern(row, col, aiPlayer, board);
                     if (patterns.liveThrees > 0 || patterns.chongFours > 0) {
-                        trapScore += 10; // 如果能迫使对手走入禁手点，分数更高
+                        trapScore += 10000; // 威胁性禁手陷阱
                     }
                 }
                 
@@ -261,7 +278,89 @@ function evaluateForbiddenTrap(row, col, opponentPlayer) {
     return trapScore;
 }
 
-// 评估防守价值
+// 设置禁手陷阱
+function setForbiddenTrap(row, col, opponentPlayer) {
+    const aiPlayer = 2;
+    const FORBIDDEN_PATTERNS = [
+        // 双三禁手模式
+        { pattern: 'double_three', priority: 90 },
+        // 双四禁手模式  
+        { pattern: 'double_four', priority: 95 },
+        // 长连禁手模式
+        { pattern: 'long_connection', priority: 80 }
+    ];
+    
+    for (const forbiddenPattern of FORBIDDEN_PATTERNS) {
+        const trapPoint = matchForbiddenPattern(row, col, forbiddenPattern, opponentPlayer);
+        if (trapPoint) {
+            // 制造诱导性威胁
+            const canForce = makeDecoyThreat(row, col, trapPoint, aiPlayer);
+            return {
+                canTrap: true,
+                isForced: canForce,
+                trapPoint: trapPoint,
+                pattern: forbiddenPattern.pattern
+            };
+        }
+    }
+    
+    return { canTrap: false, isForced: false };
+}
+
+// 匹配禁手模式
+function matchForbiddenPattern(row, col, pattern, opponentPlayer) {
+    // 简化版：检查周围是否存在可能形成禁手的结构
+    const directions = [
+        { dr: 0, dc: 1 },  // 水平
+        { dr: 1, dc: 0 },  // 垂直
+        { dr: 1, dc: 1 },  // 对角线 \
+        { dr: 1, dc: -1 }  // 对角线 /
+    ];
+    
+    for (let tr = row - 2; tr <= row + 2; tr++) {
+        for (let tc = col - 2; tc <= col + 2; tc++) {
+            if (tr >= 0 && tr < BOARD_SIZE && tc >= 0 && tc < BOARD_SIZE && board[tr][tc] === 0) {
+                // 检查在这个位置落子是否会形成禁手
+                const forbidden = checkForbiddenMove(tr, tc, opponentPlayer);
+                if (forbidden.isForbidden && 
+                    ((pattern.pattern === 'double_three' && forbidden.type === 'Double Three') ||
+                     (pattern.pattern === 'double_four' && forbidden.type === 'Double Four') ||
+                     (pattern.pattern === 'long_connection' && forbidden.type === 'Long Connection'))) {
+                    return { row: tr, col: tc };
+                }
+            }
+        }
+    }
+    
+    return null;
+}
+
+// 制造诱导性威胁
+function makeDecoyThreat(row, col, trapPoint, aiPlayer) {
+    // 检查AI在(row,col)落子是否能形成威胁，迫使对手防守到禁手点
+    board[row][col] = aiPlayer;
+    const patterns = analyzePattern(row, col, aiPlayer, board);
+    board[row][col] = 0;
+    
+    // 如果能形成活三或冲四，且禁手点在防守路径上，则认为可以迫使
+    if (patterns.liveThrees > 0 || patterns.chongFours > 0) {
+        // 简化判断：如果禁手点在附近，认为有可能迫使对手走入
+        const distance = Math.abs(row - trapPoint.row) + Math.abs(col - trapPoint.col);
+        return distance <= 3;
+    }
+    
+    return false;
+}
+
+// 动态威胁评估系统 - 三级威胁预警机制
+const THREAT_LEVEL = {
+    "L5": 99999,      // 黑棋已有四连（必堵）
+    "L4": 5000,       // 黑棋活三/冲四
+    "L3": 300,        // 黑棋双活二/潜在活三
+    "L2": 50          // 黑棋单活二
+};
+
+// 评估防守价值 - 强化版攻防一体化策略
 function evaluateDefensiveValue(row, col, opponentPlayer) {
     let defenseScore = 0;
     const aiPlayer = 2;
@@ -269,38 +368,206 @@ function evaluateDefensiveValue(row, col, opponentPlayer) {
     // 检查对手在此位置的威胁
     board[row][col] = opponentPlayer;
     const opponentPatterns = analyzePattern(row, col, opponentPlayer, board);
-    board[row][col] = aiPlayer; // 恢复为AI的棋子
+    board[row][col] = 0; // 先恢复空位
     
-    // 阻止对手的活四
+    // 动态威胁评估 - 按威胁等级分配权重
+    const threatLevel = calculateThreatLevel(opponentPatterns);
+    
+    // L5级威胁：阻断活四（绝对优先）
     if (opponentPatterns.liveFours > 0) {
-        defenseScore += 50000;
+        defenseScore += THREAT_LEVEL.L5;
     }
     
-    // 阻止对手的冲四
+    // L4级威胁：阻断冲四和活三
     if (opponentPatterns.chongFours > 0) {
-        defenseScore += 10000;
+        defenseScore += THREAT_LEVEL.L4;
     }
-    
-    // 阻止对手的活三
     if (opponentPatterns.liveThrees > 0) {
-        defenseScore += 5000;
+        defenseScore += THREAT_LEVEL.L4;
+        // 双重封锁：检查是否能同时阻断多条发展线
+        defenseScore += evaluateQuantumDefense(row, col, opponentPlayer);
     }
     
-    // 阻止对手的活二
-    if (opponentPatterns.liveTwos > 0) {
-        defenseScore += 500;
+    // L3级威胁：阻断双活二和潜在活三
+    if (opponentPatterns.liveTwos >= 2) {
+        defenseScore += THREAT_LEVEL.L3;
     }
     
-    // 以攻代守：检查这一步是否同时能形成我方的威胁
+    // L2级威胁：阻断单活二
+    if (opponentPatterns.liveTwos === 1) {
+        defenseScore += THREAT_LEVEL.L2;
+    }
+    
+    // 现在检查AI在此位置的进攻价值
+    board[row][col] = aiPlayer;
     const aiPatterns = analyzePattern(row, col, aiPlayer, board);
+    board[row][col] = 0; // 恢复
     
-    // 如果这一步既能防守又能进攻，加分
+    // 攻防一体化：进攻式防守加分
     if ((opponentPatterns.liveThrees > 0 || opponentPatterns.chongFours > 0) && 
         (aiPatterns.liveThrees > 0 || aiPatterns.chongFours > 0)) {
-        defenseScore += 8000; // 以攻代守
+        defenseScore += 15000; // 阻断时永远保持"一石三鸟"思维
     }
     
+    // 蜘蛛网防御矩阵：在关键控制点落子
+    defenseScore += buildSpiderWebDefense(row, col, opponentPlayer);
+    
     return defenseScore;
+}
+
+// 计算威胁等级
+function calculateThreatLevel(patterns) {
+    if (patterns.liveFours > 0) return "L5";
+    if (patterns.chongFours > 0 || patterns.liveThrees > 0) return "L4";
+    if (patterns.liveTwos >= 2) return "L3";
+    if (patterns.liveTwos === 1) return "L2";
+    return "L1";
+}
+
+// 量子纠缠防守 - 同时阻断多条发展线
+function evaluateQuantumDefense(row, col, opponentPlayer) {
+    let quantumScore = 0;
+    const directions = [
+        { dr: 0, dc: 1 },  // 水平
+        { dr: 1, dc: 0 },  // 垂直
+        { dr: 1, dc: 1 },  // 对角线 \
+        { dr: 1, dc: -1 }  // 对角线 /
+    ];
+    
+    let blockedLines = 0;
+    
+    for (const { dr, dc } of directions) {
+        // 检测这个位置是否能阻断对手在该方向的发展
+        if (canBlockDevelopmentLine(row, col, dr, dc, opponentPlayer)) {
+            blockedLines++;
+        }
+    }
+    
+    // 同时阻断3条以上发展线时给予量子纠缠奖励
+    if (blockedLines >= 3) {
+        quantumScore += 8000; // 量子纠缠防守奖励
+    } else if (blockedLines >= 2) {
+        quantumScore += 3000; // 双向阻断奖励
+    }
+    
+    return quantumScore;
+}
+
+// 检查是否能阻断发展线
+function canBlockDevelopmentLine(row, col, dr, dc, opponentPlayer) {
+    // 检查在该方向上是否存在对手的棋子形成威胁
+    let hasOpponentStones = false;
+    let potentialLength = 0;
+    
+    // 检查正方向
+    for (let i = 1; i <= 4; i++) {
+        const r = row + dr * i;
+        const c = col + dc * i;
+        if (r >= 0 && r < BOARD_SIZE && c >= 0 && c < BOARD_SIZE) {
+            if (board[r][c] === opponentPlayer) {
+                hasOpponentStones = true;
+                potentialLength++;
+            } else if (board[r][c] === 0) {
+                potentialLength++;
+            } else {
+                break;
+            }
+        }
+    }
+    
+    // 检查反方向
+    for (let i = 1; i <= 4; i++) {
+        const r = row - dr * i;
+        const c = col - dc * i;
+        if (r >= 0 && r < BOARD_SIZE && c >= 0 && c < BOARD_SIZE) {
+            if (board[r][c] === opponentPlayer) {
+                hasOpponentStones = true;
+                potentialLength++;
+            } else if (board[r][c] === 0) {
+                potentialLength++;
+            } else {
+                break;
+            }
+        }
+    }
+    
+    // 如果有对手棋子且潜在长度足够形成五连，则认为可以阻断
+    return hasOpponentStones && potentialLength >= 3;
+}
+
+// 蜘蛛网防御矩阵
+function buildSpiderWebDefense(row, col, opponentPlayer) {
+    let spiderScore = 0;
+    
+    // 检测所有可能发展成五连的方向
+    const directions = [
+        { dr: 0, dc: 1 },  // 水平
+        { dr: 1, dc: 0 },  // 垂直
+        { dr: 1, dc: 1 },  // 对角线 \
+        { dr: 1, dc: -1 }  // 对角线 /
+    ];
+    
+    for (const { dr, dc } of directions) {
+        const threatPath = detectThreatPath(row, col, dr, dc, opponentPlayer, 5);
+        if (threatPath.length >= 3) { // 三连以上威胁
+            // 在路径"七寸位"落子（关键控制点）
+            const criticalPoint = calcCriticalNode(threatPath, row, col);
+            if (criticalPoint.isCritical) {
+                spiderScore += 2000; // 关键控制点高分
+            }
+        }
+    }
+    
+    return spiderScore;
+}
+
+// 检测威胁路径
+function detectThreatPath(row, col, dr, dc, player, maxLength) {
+    const path = [];
+    
+    // 检查正方向
+    for (let i = 1; i <= maxLength; i++) {
+        const r = row + dr * i;
+        const c = col + dc * i;
+        if (r >= 0 && r < BOARD_SIZE && c >= 0 && c < BOARD_SIZE) {
+            if (board[r][c] === player || board[r][c] === 0) {
+                path.push({ r, c, value: board[r][c] });
+            } else {
+                break;
+            }
+        }
+    }
+    
+    // 检查反方向
+    for (let i = 1; i <= maxLength; i++) {
+        const r = row - dr * i;
+        const c = col - dc * i;
+        if (r >= 0 && r < BOARD_SIZE && c >= 0 && c < BOARD_SIZE) {
+            if (board[r][c] === player || board[r][c] === 0) {
+                path.unshift({ r, c, value: board[r][c] });
+            } else {
+                break;
+            }
+        }
+    }
+    
+    return path;
+}
+
+// 计算关键控制节点
+function calcCriticalNode(threatPath, currentRow, currentCol) {
+    // 简化版：如果当前位置在威胁路径的中心区域，则认为是关键点
+    const pathLength = threatPath.length;
+    const centerStart = Math.floor(pathLength * 0.3);
+    const centerEnd = Math.floor(pathLength * 0.7);
+    
+    for (let i = centerStart; i <= centerEnd; i++) {
+        if (threatPath[i] && threatPath[i].r === currentRow && threatPath[i].c === currentCol) {
+            return { isCritical: true, index: i };
+        }
+    }
+    
+    return { isCritical: false, index: -1 };
 }
 
 // 评估八卦点（马步位）

@@ -697,20 +697,41 @@ function scorePosition(tempBoard, player) {
     return score;
 }
 
+// 四维评估体系 - 攻防平衡的综合评估
+const EVAL_WEIGHTS = {
+    "offense": {
+        "live4": 10000,
+        "double_live3": 5000,
+        "live3": 500,
+    },
+    "defense": {
+        "block_live4": 15000,    // 阻断活四高于自己造活四
+        "block_double3": 8000,
+        "thwart_attack": 3000,   // 瓦解进攻体系
+    },
+    "forbidden_trap": 20000,     // 成功设置禁手陷阱
+    "space_control": 0.3         // 控制区域比例因子
+};
+
 function scorePositionAdvanced(tempBoard, player, moveRow, moveCol) {
     let score = scorePosition(tempBoard, player);
     
     // Advanced pattern analysis for the specific move
     const patterns = analyzePattern(moveRow, moveCol, player, tempBoard);
     
-    // Bonus for creating strong patterns
-    score += patterns.liveFours * 100000;
-    score += patterns.chongFours * 10000;
-    score += patterns.liveThrees * 5000;
+    // 四维评估：进攻维度
+    score += patterns.liveFours * EVAL_WEIGHTS.offense.live4;
+    score += patterns.chongFours * 8000;
+    score += patterns.liveThrees * EVAL_WEIGHTS.offense.live3;
     score += patterns.deadThrees * 1000;
     score += patterns.liveTwos * 200;
     
-    // Bonus for 4-3 combinations
+    // 双活三组合（四三胜前奏）
+    if (patterns.liveThrees >= 2) {
+        score += EVAL_WEIGHTS.offense.double_live3;
+    }
+    
+    // 四三组合（最强攻击）
     if (patterns.chongFours >= 1 && patterns.liveThrees >= 1) {
         score += 50000; // Strong 4-3 combination
     }
@@ -719,11 +740,153 @@ function scorePositionAdvanced(tempBoard, player, moveRow, moveCol) {
         score += 30000; // Double chong four
     }
     
+    // 四维评估：防御维度
+    const opponentPlayer = player === 1 ? 2 : 1;
+    const defenseScore = evaluateDefensiveValue(moveRow, moveCol, opponentPlayer);
+    score += defenseScore;
+    
+    // 四维评估：禁手陷阱维度
+    const forbiddenTrapScore = evaluateForbiddenTrap(moveRow, moveCol, opponentPlayer);
+    score += forbiddenTrapScore;
+    
+    // 四维评估：空间控制维度
+    const spaceControlScore = evaluateSpaceControl(moveRow, moveCol, player, tempBoard);
+    score += spaceControlScore * EVAL_WEIGHTS.space_control;
+    
+    // 实时防御校准
+    const adjustedScore = adjustDefenseFocus(score, moveRow, moveCol, player);
+    
     // Penalty for risky positions that might lead to forbidden moves
     const riskScore = evaluateForbiddenRisk(moveRow, moveCol, player, tempBoard);
-    score -= riskScore;
     
-    return score;
+    return adjustedScore - riskScore;
+}
+
+// 评估空间控制能力
+function evaluateSpaceControl(row, col, player, tempBoard) {
+    let controlScore = 0;
+    const center = Math.floor(BOARD_SIZE / 2);
+    
+    // 中心控制奖励
+    const distanceFromCenter = Math.abs(row - center) + Math.abs(col - center);
+    controlScore += Math.max(0, 10 - distanceFromCenter) * 100;
+    
+    // 计算控制的空间范围
+    let controlledArea = 0;
+    const checkRadius = 3;
+    
+    for (let dr = -checkRadius; dr <= checkRadius; dr++) {
+        for (let dc = -checkRadius; dc <= checkRadius; dc++) {
+            const r = row + dr;
+            const c = col + dc;
+            if (r >= 0 && r < BOARD_SIZE && c >= 0 && c < BOARD_SIZE) {
+                // 检查这个区域是否在我方影响范围内
+                if (isInInfluenceZone(r, c, row, col, player, tempBoard)) {
+                    controlledArea++;
+                }
+            }
+        }
+    }
+    
+    controlScore += controlledArea * 50;
+    
+    return controlScore;
+}
+
+// 检查是否在影响区域内
+function isInInfluenceZone(r, c, centerR, centerC, player, tempBoard) {
+    const distance = Math.abs(r - centerR) + Math.abs(c - centerC);
+    if (distance > 3) return false;
+    
+    // 检查是否有己方棋子在附近形成影响
+    const directions = [
+        { dr: 0, dc: 1 }, { dr: 1, dc: 0 }, { dr: 1, dc: 1 }, { dr: 1, dc: -1 }
+    ];
+    
+    for (const { dr, dc } of directions) {
+        for (let i = 1; i <= 2; i++) {
+            const nr = r + dr * i;
+            const nc = c + dc * i;
+            if (nr >= 0 && nr < BOARD_SIZE && nc >= 0 && nc < BOARD_SIZE) {
+                if (tempBoard[nr][nc] === player) {
+                    return true;
+                }
+            }
+        }
+    }
+    
+    return false;
+}
+
+// 实时防御校准机制
+function adjustDefenseFocus(baseScore, row, col, player) {
+    const threatMap = createThreatHeatmap();
+    const maxThreat = Math.max(...Object.values(threatMap));
+    const THREAT_REDLINE = 8000; // 红色警戒线
+    
+    if (maxThreat > THREAT_REDLINE) {
+        // 进入红色警戒模式
+        const emergencyDefenseBonus = evaluateEmergencyBlock(row, col, player);
+        return baseScore + emergencyDefenseBonus;
+    } else {
+        // 平衡模式
+        return baseScore;
+    }
+}
+
+// 创建威胁热力图
+function createThreatHeatmap() {
+    const threatMap = {};
+    const opponentPlayer = 1; // 黑棋
+    
+    for (let r = 0; r < BOARD_SIZE; r++) {
+        for (let c = 0; c < BOARD_SIZE; c++) {
+            if (board[r][c] === 0) {
+                // 模拟对手在此位置落子的威胁程度
+                board[r][c] = opponentPlayer;
+                const patterns = analyzePattern(r, c, opponentPlayer, board);
+                board[r][c] = 0;
+                
+                let threatLevel = 0;
+                if (patterns.liveFours > 0) threatLevel += 10000;
+                if (patterns.chongFours > 0) threatLevel += 5000;
+                if (patterns.liveThrees > 0) threatLevel += 1000;
+                if (patterns.liveTwos >= 2) threatLevel += 300;
+                
+                threatMap[`${r},${c}`] = threatLevel;
+            }
+        }
+    }
+    
+    return threatMap;
+}
+
+// 评估紧急阻断价值
+function evaluateEmergencyBlock(row, col, player) {
+    const opponentPlayer = player === 1 ? 2 : 1;
+    let emergencyScore = 0;
+    
+    // 检查这一步是否能阻断对手的致命威胁
+    board[row][col] = opponentPlayer;
+    const opponentPatterns = analyzePattern(row, col, opponentPlayer, board);
+    board[row][col] = 0;
+    
+    // 紧急阻断活四
+    if (opponentPatterns.liveFours > 0) {
+        emergencyScore += 50000;
+    }
+    
+    // 紧急阻断双冲四
+    if (opponentPatterns.chongFours >= 2) {
+        emergencyScore += 30000;
+    }
+    
+    // 紧急阻断四三组合
+    if (opponentPatterns.chongFours >= 1 && opponentPatterns.liveThrees >= 1) {
+        emergencyScore += 40000;
+    }
+    
+    return emergencyScore;
 }
 
 function evaluateForbiddenRisk(row, col, player, tempBoard) {
@@ -948,6 +1111,25 @@ function findFourThreeWin(player, tempBoard) {
     return null;
 }
 
+// 防守记忆库 - 存储常见攻击阵型的破解方案
+const DEFENSE_MEMORY_BANK = {
+    // 梅花阵破解
+    "plum_blossom": {
+        pattern: [[1,0,1,0,1], [0,1,0,1,0]],
+        counter: {row: 2, col: 2, priority: 9000}
+    },
+    // 剑阵破解
+    "sword_formation": {
+        pattern: [[1,1,0,1], [0,0,1,0]],
+        counter: {row: 1, col: 2, priority: 8500}
+    },
+    // 燕阵破解
+    "swallow_formation": {
+        pattern: [[1,0,0,1], [0,1,1,0]],
+        counter: {row: 0, col: 1, priority: 8000}
+    }
+};
+
 function findBestMoveForAI() {
     const aiPlayer = 2;
     const humanPlayer = 1;
@@ -958,6 +1140,20 @@ function findBestMoveForAI() {
         for (let c = 0; c < BOARD_SIZE; c++) {
             if (board[r][c] !== 0) moveCount++;
         }
+    }
+    
+    // 终局防御协议 - 最后15步绝对防守
+    if (moveCount > 210) { // 最后15步
+        const endgameDefenseMove = executeEndgameDefenseProtocol();
+        if (endgameDefenseMove) {
+            return endgameDefenseMove;
+        }
+    }
+    
+    // 防守记忆库检查 - 识别已知攻击模式
+    const memoryDefenseMove = checkDefenseMemoryBank();
+    if (memoryDefenseMove) {
+        return memoryDefenseMove;
     }
     
     // 开局策略（前几步）
@@ -989,8 +1185,165 @@ function findBestMoveForAI() {
         return chongFourMove;
     }
     
-    // 5. 使用增强的评估与禁手避免
+    // 5. 虚实结合战术 - 进攻式防守
+    const offensiveDefenseMove = findOffensiveDefenseMove();
+    if (offensiveDefenseMove) {
+        return offensiveDefenseMove;
+    }
+    
+    // 6. 使用增强的评估与禁手避免
     return findBestSafeMove();
+}
+
+// 终局防御协议
+function executeEndgameDefenseProtocol() {
+    // 扫描所有空位，检查黑棋是否能形成五连
+    for (let r = 0; r < BOARD_SIZE; r++) {
+        for (let c = 0; c < BOARD_SIZE; c++) {
+            if (board[r][c] === 0) {
+                // 模拟黑棋在此位置落子
+                board[r][c] = 1;
+                if (checkWin(1)) {
+                    board[r][c] = 0;
+                    return {row: r, col: c}; // 绝对优先阻断
+                }
+                board[r][c] = 0;
+            }
+        }
+    }
+    
+    return null;
+}
+
+// 检查防守记忆库
+function checkDefenseMemoryBank() {
+    for (const [formationName, formation] of Object.entries(DEFENSE_MEMORY_BANK)) {
+        const matchResult = matchFormationPattern(formation.pattern);
+        if (matchResult) {
+            const counterRow = matchResult.baseRow + formation.counter.row;
+            const counterCol = matchResult.baseCol + formation.counter.col;
+            
+            if (isValidMove(counterRow, counterCol)) {
+                return {row: counterRow, col: counterCol};
+            }
+        }
+    }
+    return null;
+}
+
+// 匹配阵型模式
+function matchFormationPattern(pattern) {
+    const patternHeight = pattern.length;
+    const patternWidth = pattern[0].length;
+    
+    for (let r = 0; r <= BOARD_SIZE - patternHeight; r++) {
+        for (let c = 0; c <= BOARD_SIZE - patternWidth; c++) {
+            let matches = true;
+            
+            for (let pr = 0; pr < patternHeight && matches; pr++) {
+                for (let pc = 0; pc < patternWidth && matches; pc++) {
+                    const expectedValue = pattern[pr][pc];
+                    const actualValue = board[r + pr][c + pc];
+                    
+                    if (expectedValue !== 0 && actualValue !== expectedValue) {
+                        matches = false;
+                    }
+                }
+            }
+            
+            if (matches) {
+                return {baseRow: r, baseCol: c};
+            }
+        }
+    }
+    
+    return null;
+}
+
+// 虚实结合战术 - 进攻式防守
+function findOffensiveDefenseMove() {
+    const candidates = [];
+    
+    for (let r = 0; r < BOARD_SIZE; r++) {
+        for (let c = 0; c < BOARD_SIZE; c++) {
+            if (board[r][c] === 0) {
+                let score = 0;
+                
+                // 检查是否能同时实现：1）瓦解当前威胁 2）限制发展空间 3）构建己方攻势
+                
+                // 1. 瓦解当前威胁
+                const defenseValue = evaluateDefensiveValue(r, c, 1);
+                if (defenseValue > 1000) {
+                    score += defenseValue;
+                    
+                    // 2. 限制发展空间
+                    const spaceRestriction = evaluateSpaceRestriction(r, c);
+                    score += spaceRestriction;
+                    
+                    // 3. 构建己方攻势
+                    board[r][c] = 2;
+                    const offenseValue = scorePositionAdvanced(board, 2, r, c);
+                    board[r][c] = 0;
+                    score += offenseValue * 0.3; // 30%权重的进攻价值
+                    
+                    // 一石三鸟奖励
+                    if (defenseValue > 3000 && spaceRestriction > 500 && offenseValue > 1000) {
+                        score += 5000; // 一石三鸟奖励
+                    }
+                    
+                    candidates.push({row: r, col: c, score: score});
+                }
+            }
+        }
+    }
+    
+    if (candidates.length > 0) {
+        candidates.sort((a, b) => b.score - a.score);
+        return candidates[0];
+    }
+    
+    return null;
+}
+
+// 评估空间限制价值
+function evaluateSpaceRestriction(row, col) {
+    let restrictionScore = 0;
+    const opponentPlayer = 1;
+    
+    // 检查这一步是否能限制对手的发展空间
+    const directions = [
+        { dr: 0, dc: 1 }, { dr: 1, dc: 0 }, { dr: 1, dc: 1 }, { dr: 1, dc: -1 }
+    ];
+    
+    for (const { dr, dc } of directions) {
+        // 检查这个方向上是否有对手的棋子
+        let opponentPieces = 0;
+        let emptySpaces = 0;
+        
+        for (let i = 1; i <= 4; i++) {
+            const r1 = row + dr * i;
+            const c1 = col + dc * i;
+            const r2 = row - dr * i;
+            const c2 = col - dc * i;
+            
+            if (r1 >= 0 && r1 < BOARD_SIZE && c1 >= 0 && c1 < BOARD_SIZE) {
+                if (board[r1][c1] === opponentPlayer) opponentPieces++;
+                else if (board[r1][c1] === 0) emptySpaces++;
+            }
+            
+            if (r2 >= 0 && r2 < BOARD_SIZE && c2 >= 0 && c2 < BOARD_SIZE) {
+                if (board[r2][c2] === opponentPlayer) opponentPieces++;
+                else if (board[r2][c2] === 0) emptySpaces++;
+            }
+        }
+        
+        // 如果这个方向有对手棋子且有空间，限制价值较高
+        if (opponentPieces > 0 && emptySpaces > 0) {
+            restrictionScore += opponentPieces * emptySpaces * 100;
+        }
+    }
+    
+    return restrictionScore;
 }
 
 function getSafeOpeningMove() {
